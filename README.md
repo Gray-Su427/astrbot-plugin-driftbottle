@@ -1,14 +1,42 @@
-# astrbot-plugin-helloworld
+# 漂流瓶插件
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+匿名情绪漂流瓶——私聊投递小纸条，群内捞取/开箱读出，营造情绪接纳的信任空间。
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+## 使用场景
 
-# Supports
+垃圾话漂流瓶：每人写一封匿名的小纸条（可以是疲惫/脆弱/小委屈/开心事），放进小纸箱/漂流瓶，一周当众对照纸条读出来，营造情绪接纳的信任空间。
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+## 指令列表
+
+| 指令 | 场景 | 说明 |
+|------|------|------|
+| `/投瓶 <内容>` | 私聊 | 匿名投入一张小纸条（最多 500 字） |
+| `/我的瓶子` | 私聊 | 查看自己投入且仍在漂流中的纸条 |
+| `/收回 <编号>` | 私聊 | 收回自己仍在漂流中的纸条 |
+| `/捞瓶` | 群聊 | 随机捞出一张匿名纸条（不会捞到自己投的） |
+| `/开箱` | 群聊 | 一次性捞出所有纸条并逐条展示（适合每周活动） |
+| `/瓶海` | 群聊 | 查看当前漂流瓶数量统计 |
+
+## 使用流程
+
+1. **投递**：私聊机器人发送 `/投瓶 最近考试压力好大`，机器人回复确认信息（含纸条编号）
+2. **管理**：私聊发送 `/我的瓶子` 查看自己的纸条，用 `/收回 <编号>` 撤回
+3. **日常捞取**：群内发送 `/捞瓶`，随机捞一张匿名纸条展示
+4. **每周开箱**：群内发送 `/开箱`，一次性展示所有纸条（对应"一周当众读出来"的场景）
+
+## 匿名性
+
+- 所有纸条在群内展示时均为**完全匿名**，不显示任何投递者信息
+- 数据库中虽然记录了投递者 ID（用于防止自己捞到自己的纸条），但展示时绝不暴露
+- 即使是管理员也无法通过指令查看投递者身份
+
+## 数据存储
+
+- 使用 JSON 文件存储，路径：`data/plugins/astrbot-plugin-driftbottle/bottles.json`
+- 零额外依赖，仅使用 Python 标准库
+
+## 与盲盒插件的关系
+
+- 漂流瓶是盲盒任务池中的"交流类"任务之一
+- 两个插件完全独立，可单独启停
+- 复用了盲盒插件的 QQ 识别逻辑和数据目录解析方式
