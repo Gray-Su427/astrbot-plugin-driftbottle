@@ -15,6 +15,9 @@ KV_STATE_KEY = "driftbottle_state"
 BOTTLES_FILE_NAME = "bottles.json"
 BLINDBOX_PLUGIN_NAME = "astrbot_plugin_blindbox"
 
+# 大群群号列表（具有大群访问权限的群）
+MAIN_GROUP_IDS = {"1101625277", "1104133425"}
+
 
 # ----------------------------
 # 工具函数（复用自盲盒插件）
@@ -74,14 +77,14 @@ def _default_data() -> dict[str, Any]:
 # ----------------------------
 
 
-@register(PLUGIN_NAME, "Gray-Su", "匿名情绪漂流瓶——私聊投递，群内捞取", "2.0.0")
+@register(PLUGIN_NAME, "Gray-Su", "匿名情绪漂流瓶——私聊投递，群内捞取", "2.1.0")
 class DriftBottlePlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
         self._lock = asyncio.Lock()
         self._data: dict[str, Any] = _default_data()
         self._data_loaded = False
-        self._member_to_group: dict[str, str] = {}  # sender_id -> group_name 缓存
+        self._member_to_group: dict[str, str] = {}
 
     async def initialize(self):
         """插件初始化，加载漂流瓶数据和小组映射。"""
@@ -101,14 +104,17 @@ class DriftBottlePlugin(Star):
         async with self._lock:
             raw = _safe_json_load(self._bottles_file_path(), None)
             if isinstance(raw, dict) and "public" in raw:
-                # 新格式：{"public": [...], "groups": {"组名": [...]}}
                 self._data = raw
             elif isinstance(raw, list):
-                # 兼容旧格式（单列表），迁移到新格式
                 self._data = {"public": raw, "groups": {}}
                 _safe_json_dump(self._bottles_file_path(), self._data)
             else:
                 self._data = _default_data()
+            for pool in [self._data.get("public", [])] + list(self._data.get("groups", {}).values()):
+                for bottle in pool:
+                    if isinstance(bottle, dict):
+                        bottle.setdefault("likes", 0)
+                        bottle.setdefault("liked_by", [])
             self._data_loaded = True
             _safe_json_dump(self._bottles_file_path(), self._data)
             return self._data
@@ -130,11 +136,9 @@ class DriftBottlePlugin(Star):
 
     async def _load_member_to_group(self) -> None:
         """加载用户→小组映射：优先从盲盒插件读取，备用从 KV 缓存读取。"""
-        # 1. 尝试从盲盒插件读取
         blindbox_meta = self.context.get_registered_star(BLINDBOX_PLUGIN_NAME)
         if blindbox_meta:
             try:
-                # 盲盒插件的状态存储在 KV 中，key 为 "blindbox_state"
                 blindbox_state = await self.get_kv_data("blindbox_state", None)
                 if isinstance(blindbox_state, dict):
                     member_to_group = blindbox_state.get("member_to_group", {})
@@ -144,7 +148,6 @@ class DriftBottlePlugin(Star):
             except Exception as e:
                 logger.warning(f"从盲盒插件读取小组映射失败: {e}")
 
-        # 2. 从自己的 KV 缓存读取（手动设置的覆盖盲盒的）
         cached = await self.get_kv_data(KV_STATE_KEY, None)
         if isinstance(cached, dict):
             manual_mapping = cached.get("member_to_group", {})
@@ -198,13 +201,11 @@ class DriftBottlePlugin(Star):
     def _remove_bottle_from_all_pools(self, bottle_id: str) -> bool:
         """从所有池子中移除指定瓶子（用于收回）。"""
         removed = False
-        # 大群池
         public = self._data.get("public", [])
         new_public = [b for b in public if b.get("id") != bottle_id]
         if len(new_public) < len(public):
             removed = True
         self._data["public"] = new_public
-        # 小组池
         groups = self._data.get("groups", {})
         for group_name, pool in groups.items():
             new_pool = [b for b in pool if b.get("id") != bottle_id]
@@ -248,6 +249,35 @@ class DriftBottlePlugin(Star):
                     result.append(bottle)
         return result
 
+    def _get_bottle_public_no(self, bottle: dict[str, Any]) -> int:
+        """获取瓶子在大群池中的序列号（从1开始），找不到返回-1。"""
+        public = self._data.get("public", [])
+        for i, b in enumerate(public):
+            if b.get("id") == bottle.get("id"):
+                return i + 1
+        return -1
+
+    def _get_bottle_by_public_no(self, no: int) -> dict[str, Any] | None:
+        """根据大群序列号获取瓶子。"""
+        public = self._data.get("public", [])
+        if 1 <= no <= len(public):
+            return public[no - 1]
+        return None
+
+    def _format_bottle_display(
+        self, bottle: dict[str, Any], show_name: bool = False
+    ) -> str:
+        """格式化瓶子的展示文本，包含编号和点赞数。"""
+        no = self._get_bottle_public_no(bottle)
+        likes = bottle.get("likes", 0)
+        no_str = f"【第 {no} 号漂流瓶】\n" if no > 0 else ""
+        like_str = f"  ❤️ {likes}" if likes > 0 else ""
+        if show_name:
+            sender_name = bottle.get("sender_name", "某位同学")
+            return f"{no_str}「{bottle['content']}」\n——来自 {sender_name}{like_str}"
+        else:
+            return f"{no_str}「{bottle['content']}」\n——来自某位同学{like_str}"
+
     # ----------------------------
     # 指令：投瓶（私聊）
     # ----------------------------
@@ -280,7 +310,6 @@ class DriftBottlePlugin(Star):
 
         await self._get_data()
 
-        # 确定瓶子放入哪些池子
         pools = ["public"]
         group_name = self._get_user_group(sender_id)
         if group_name:
@@ -295,17 +324,20 @@ class DriftBottlePlugin(Star):
             "status": "floating",
             "read_at": None,
             "pools": pools,
+            "likes": 0,
+            "liked_by": [],
         }
 
         self._add_bottle_to_pools(bottle, pools)
         await self._save_data()
 
+        no = self._get_bottle_public_no(bottle)
         group_hint = f"\n已同时投入【{group_name}】的私有瓶海。" if group_name else ""
         yield event.plain_result(
             "🫧 你的小纸条已投入瓶中，\n"
             "它会漂向远方，被温柔地拾起。\n\n"
-            f"纸条编号：{bottle['id']}\n"
-            f"（请记住编号，以便后续管理）"
+            f"编号：第 {no} 号\n"
+            f"（大家可以用 /赞 {no} 来点赞哦）"
             f"{group_hint}"
         )
 
@@ -330,12 +362,9 @@ class DriftBottlePlugin(Star):
             return
 
         bottle = choice(floating)
+        display = self._format_bottle_display(bottle, show_name=False)
 
-        yield event.plain_result(
-            "🫧 捞到了一张小纸条：\n\n"
-            f"「{bottle['content']}」\n\n"
-            "——来自某位同学"
-        )
+        yield event.plain_result(f"🫧 捞到了一张小纸条：\n\n{display}")
 
     # ----------------------------
     # 指令：自家鱼塘（群聊，从小组池）
@@ -370,13 +399,9 @@ class DriftBottlePlugin(Star):
             return
 
         bottle = choice(floating)
-        sender_name = bottle.get("sender_name", "某位同学")
+        display = self._format_bottle_display(bottle, show_name=True)
 
-        yield event.plain_result(
-            f"🫧 从【{group_name}】的鱼塘捞到了一张小纸条：\n\n"
-            f"「{bottle['content']}」\n\n"
-            f"——来自 {sender_name}"
-        )
+        yield event.plain_result(f"🫧 从【{group_name}】的鱼塘捞到了一张小纸条：\n\n{display}")
 
     # ----------------------------
     # 指令：开箱（群聊，从小组池）
@@ -413,12 +438,9 @@ class DriftBottlePlugin(Star):
         now = _timestamp()
         lines = [f"📦 打开了【{group_name}】的漂流瓶箱，共 {len(floating)} 张小纸条：\n"]
 
-        for i, bottle in enumerate(floating, 1):
-            bottle["status"] = "read"
-            bottle["read_at"] = now
-            sender_name = bottle.get("sender_name", "某位同学")
-            lines.append(f"{i}.「{bottle['content']}」")
-            lines.append(f"  ——来自 {sender_name}")
+        for bottle in floating:
+            display = self._format_bottle_display(bottle, show_name=True)
+            lines.append(display)
             lines.append("")
 
         await self._save_data()
@@ -427,6 +449,57 @@ class DriftBottlePlugin(Star):
         lines.append("下周继续投递吧！私聊机器人 /投瓶 即可投递。")
 
         yield event.plain_result("\n".join(lines))
+
+    # ----------------------------
+    # 指令：赞（群聊）
+    # ----------------------------
+
+    @filter.command("赞")
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    async def like_bottle(self, event: AstrMessageEvent):
+        """给指定编号的漂流瓶点赞。用法：/赞 <编号>"""
+        no_str = event.message_str.strip()
+        for prefix in ("/赞", "/赞 "):
+            if no_str.startswith(prefix):
+                no_str = no_str[len(prefix):].strip()
+                break
+
+        if not no_str:
+            yield event.plain_result("请输入漂流瓶编号～\n用法：/赞 <编号>\n例如：/赞 42")
+            return
+
+        try:
+            no = int(no_str)
+        except ValueError:
+            yield event.plain_result("编号必须是数字哦～\n用法：/赞 <编号>")
+            return
+
+        try:
+            sender_id = _get_sender_id(event)
+        except ValueError:
+            yield event.plain_result("无法识别你的身份，请稍后再试。")
+            return
+
+        await self._get_data()
+        bottle = self._get_bottle_by_public_no(no)
+
+        if not bottle:
+            yield event.plain_result(f"找不到第 {no} 号漂流瓶，请检查编号是否正确～")
+            return
+
+        liked_by: list[str] = bottle.get("liked_by", [])
+        if sender_id in liked_by:
+            yield event.plain_result(f"你已经赞过第 {no} 号漂流瓶了哦～\n当前 ❤️ {bottle.get('likes', 0)} 个赞")
+            return
+
+        liked_by.append(sender_id)
+        bottle["likes"] = len(liked_by)
+        await self._save_data()
+
+        yield event.plain_result(
+            f"❤️ 已为第 {no} 号漂流瓶点赞！\n"
+            f"当前共 {bottle['likes']} 个赞"
+        )
 
     # ----------------------------
     # 指令：瓶海（群聊）
@@ -438,7 +511,6 @@ class DriftBottlePlugin(Star):
         """查看大群瓶海和所属小组瓶海的数量统计。"""
         await self._get_data()
 
-        # 大群统计
         public = self._data.get("public", [])
         pub_floating = sum(1 for b in public if b.get("status") == "floating")
         pub_read = sum(1 for b in public if b.get("status") == "read")
@@ -448,7 +520,6 @@ class DriftBottlePlugin(Star):
             f"  【大群瓶海】漂流中 {pub_floating} 张 | 已读出 {pub_read} 张",
         ]
 
-        # 小组统计
         try:
             sender_id = _get_sender_id(event)
             group_name = self._get_user_group(sender_id)
@@ -463,7 +534,7 @@ class DriftBottlePlugin(Star):
         else:
             lines.append("  【小组瓶海】未设置小组，无法显示")
 
-        lines.append(f"\n私聊机器人 /投瓶 可以投递纸条哦～")
+        lines.append("\n私聊机器人 /投瓶 可以投递纸条哦～")
 
         yield event.plain_result("\n".join(lines))
 
@@ -490,10 +561,13 @@ class DriftBottlePlugin(Star):
 
         lines = [f"🫧 你有 {len(my_floating)} 张纸条在漂流中：\n"]
         for bottle in my_floating:
+            no = self._get_bottle_public_no(bottle)
             preview = bottle["content"][:30] + "..." if len(bottle["content"]) > 30 else bottle["content"]
+            likes = bottle.get("likes", 0)
             pools = bottle.get("pools", [])
             pool_hint = "、".join(pools) if pools else "未知"
-            lines.append(f"  编号 {bottle['id']}：{preview}")
+            like_str = f" | ❤️ {likes}" if likes > 0 else ""
+            lines.append(f"  第 {no} 号：{preview}{like_str}")
             lines.append(f"  所在池子：{pool_hint}")
             lines.append(f"  投入时间：{bottle['created_at']}")
             lines.append("")
@@ -508,14 +582,20 @@ class DriftBottlePlugin(Star):
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     async def recall_bottle(self, event: AstrMessageEvent):
         """收回自己仍在漂流中的纸条（从所有池子移除）。用法：/收回 <编号>"""
-        bottle_id = event.message_str.strip()
+        no_str = event.message_str.strip()
         for prefix in ("/收回", "/收回 "):
-            if bottle_id.startswith(prefix):
-                bottle_id = bottle_id[len(prefix):].strip()
+            if no_str.startswith(prefix):
+                no_str = no_str[len(prefix):].strip()
                 break
 
-        if not bottle_id:
-            yield event.plain_result("请输入要收回的纸条编号～\n用法：/收回 <编号>\n可用 /我的瓶子 查看编号")
+        if not no_str:
+            yield event.plain_result("请输入漂流瓶编号～\n用法：/收回 <编号>\n可用 /我的瓶子 查看编号")
+            return
+
+        try:
+            no = int(no_str)
+        except ValueError:
+            yield event.plain_result("编号必须是数字哦～\n用法：/收回 <编号>")
             return
 
         try:
@@ -525,20 +605,25 @@ class DriftBottlePlugin(Star):
             return
 
         await self._get_data()
-        target = self._find_bottle_in_all_pools(bottle_id, sender_id=sender_id, status="floating")
+        bottle = self._get_bottle_by_public_no(no)
 
-        if not target:
-            yield event.plain_result(
-                f"找不到编号为 {bottle_id} 且属于你的漂流中纸条。\n"
-                "请检查编号是否正确，或用 /我的瓶子 查看你的纸条。"
-            )
+        if not bottle:
+            yield event.plain_result(f"找不到第 {no} 号漂流瓶。\n请检查编号是否正确，或用 /我的瓶子 查看你的纸条。")
             return
 
-        self._remove_bottle_from_all_pools(bottle_id)
+        if bottle.get("sender_id") != sender_id:
+            yield event.plain_result(f"第 {no} 号漂流瓶不是你投的哦，只能收回自己的纸条～")
+            return
+
+        if bottle.get("status") != "floating":
+            yield event.plain_result(f"第 {no} 号漂流瓶已经不在漂流中了，无法收回。")
+            return
+
+        self._remove_bottle_from_all_pools(bottle["id"])
         await self._save_data()
 
         yield event.plain_result(
-            f"🫧 已收回编号 {bottle_id} 的纸条。\n"
+            f"🫧 已收回第 {no} 号纸条。\n"
             "这张纸条已从所有瓶海中移除，不会被任何人看到。"
         )
 
