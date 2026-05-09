@@ -15,9 +15,6 @@ KV_STATE_KEY = "driftbottle_state"
 BOTTLES_FILE_NAME = "bottles.json"
 BLINDBOX_PLUGIN_NAME = "astrbot_plugin_blindbox"
 
-# 大群群号列表（具有大群访问权限的群）
-MAIN_GROUP_IDS = {"1101625277", "1104133425"}
-
 
 # ----------------------------
 # 工具函数（复用自盲盒插件）
