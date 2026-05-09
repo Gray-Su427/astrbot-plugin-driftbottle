@@ -470,10 +470,8 @@ class DriftBottlePlugin(Star):
     async def like_bottle(self, event: AstrMessageEvent):
         """给指定编号的漂流瓶点赞。用法：/赞 <编号>"""
         no_str = event.message_str.strip()
-        for prefix in ("/赞", "/赞 "):
-            if no_str.startswith(prefix):
-                no_str = no_str[len(prefix):].strip()
-                break
+        parts = no_str.split()
+        no_str = parts[-1] if len(parts) >= 2 else ""
 
         if not no_str:
             event.stop_event()
@@ -604,10 +602,8 @@ class DriftBottlePlugin(Star):
     async def recall_bottle(self, event: AstrMessageEvent):
         """收回自己仍在漂流中的纸条（从所有池子移除）。用法：/收回 <编号>"""
         no_str = event.message_str.strip()
-        for prefix in ("/收回", "/收回 "):
-            if no_str.startswith(prefix):
-                no_str = no_str[len(prefix):].strip()
-                break
+        parts = no_str.split()
+        no_str = parts[-1] if len(parts) >= 2 else ""
 
         if not no_str:
             event.stop_event()
