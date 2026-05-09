@@ -290,16 +290,19 @@ class DriftBottlePlugin(Star):
                 break
 
         if not content:
+            event.stop_event()
             yield event.plain_result("请输入纸条内容～\n用法：/投瓶 <你想说的话>")
             return
 
         if len(content) > 500:
+            event.stop_event()
             yield event.plain_result("纸条内容太长啦，请控制在 500 字以内～")
             return
 
         try:
             sender_id = _get_sender_id(event)
         except ValueError:
+            event.stop_event()
             yield event.plain_result("无法识别你的身份，请稍后再试。")
             return
 
@@ -330,6 +333,7 @@ class DriftBottlePlugin(Star):
 
         no = self._get_bottle_public_no(bottle)
         group_hint = f"\n已同时投入【{group_name}】的私有瓶海。" if group_name else ""
+        event.stop_event()
         yield event.plain_result(
             "🫧 你的小纸条已投入瓶中，\n"
             "它会漂向远方，被温柔地拾起。\n\n"
@@ -355,12 +359,14 @@ class DriftBottlePlugin(Star):
         await self._get_data()
         floating = self._get_floating_from_pool("public", exclude_sender_id=sender_id)
         if not floating:
+            event.stop_event()
             yield event.plain_result("🫧 瓶海空空如也，暂时没有可以捞的纸条～\n去私聊机器人 /投瓶 投一张吧！")
             return
 
         bottle = choice(floating)
         display = self._format_bottle_display(bottle, show_name=False)
 
+        event.stop_event()
         yield event.plain_result(f"🫧 捞到了一张小纸条：\n\n{display}")
 
     # ----------------------------
@@ -374,12 +380,14 @@ class DriftBottlePlugin(Star):
         try:
             sender_id = _get_sender_id(event)
         except ValueError:
+            event.stop_event()
             yield event.plain_result("无法识别你的身份，请稍后再试。")
             return
 
         await self._get_data()
         group_name = self._get_user_group(sender_id)
         if not group_name:
+            event.stop_event()
             yield event.plain_result(
                 "🫧 还不知道你属于哪个小组呢～\n"
                 "请私聊机器人发送 /设置小组 <组名> 来设置，\n"
@@ -389,6 +397,7 @@ class DriftBottlePlugin(Star):
 
         floating = self._get_floating_from_pool(group_name, exclude_sender_id=sender_id)
         if not floating:
+            event.stop_event()
             yield event.plain_result(
                 f"🫧 【{group_name}】的鱼塘空空如也～\n"
                 "去私聊机器人 /投瓶 投一张吧！"
@@ -398,6 +407,7 @@ class DriftBottlePlugin(Star):
         bottle = choice(floating)
         display = self._format_bottle_display(bottle, show_name=True)
 
+        event.stop_event()
         yield event.plain_result(f"🫧 从【{group_name}】的鱼塘捞到了一张小纸条：\n\n{display}")
 
     # ----------------------------
@@ -411,12 +421,14 @@ class DriftBottlePlugin(Star):
         try:
             sender_id = _get_sender_id(event)
         except ValueError:
+            event.stop_event()
             yield event.plain_result("无法识别你的身份，请稍后再试。")
             return
 
         await self._get_data()
         group_name = self._get_user_group(sender_id)
         if not group_name:
+            event.stop_event()
             yield event.plain_result(
                 "📦 还不知道你属于哪个小组呢～\n"
                 "请私聊机器人发送 /设置小组 <组名> 来设置，\n"
@@ -426,6 +438,7 @@ class DriftBottlePlugin(Star):
 
         floating = self._get_floating_from_pool(group_name)
         if not floating:
+            event.stop_event()
             yield event.plain_result(
                 f"📦 【{group_name}】的箱子里空空的，没有纸条～\n"
                 "去私聊机器人 /投瓶 投一张吧！"
@@ -445,6 +458,7 @@ class DriftBottlePlugin(Star):
         lines.append("所有纸条已读出，箱子里又空了～")
         lines.append("下周继续投递吧！私聊机器人 /投瓶 即可投递。")
 
+        event.stop_event()
         yield event.plain_result("\n".join(lines))
 
     # ----------------------------
@@ -462,18 +476,21 @@ class DriftBottlePlugin(Star):
                 break
 
         if not no_str:
+            event.stop_event()
             yield event.plain_result("请输入漂流瓶编号～\n用法：/赞 <编号>\n例如：/赞 42")
             return
 
         try:
             no = int(no_str)
         except ValueError:
+            event.stop_event()
             yield event.plain_result("编号必须是数字哦～\n用法：/赞 <编号>")
             return
 
         try:
             sender_id = _get_sender_id(event)
         except ValueError:
+            event.stop_event()
             yield event.plain_result("无法识别你的身份，请稍后再试。")
             return
 
@@ -481,11 +498,13 @@ class DriftBottlePlugin(Star):
         bottle = self._get_bottle_by_public_no(no)
 
         if not bottle:
+            event.stop_event()
             yield event.plain_result(f"找不到第 {no} 号漂流瓶，请检查编号是否正确～")
             return
 
         liked_by: list[str] = bottle.get("liked_by", [])
         if sender_id in liked_by:
+            event.stop_event()
             yield event.plain_result(f"你已经赞过第 {no} 号漂流瓶了哦～\n当前 ❤️ {bottle.get('likes', 0)} 个赞")
             return
 
@@ -493,6 +512,7 @@ class DriftBottlePlugin(Star):
         bottle["likes"] = len(liked_by)
         await self._save_data()
 
+        event.stop_event()
         yield event.plain_result(
             f"❤️ 已为第 {no} 号漂流瓶点赞！\n"
             f"当前共 {bottle['likes']} 个赞"
@@ -533,6 +553,7 @@ class DriftBottlePlugin(Star):
 
         lines.append("\n私聊机器人 /投瓶 可以投递纸条哦～")
 
+        event.stop_event()
         yield event.plain_result("\n".join(lines))
 
     # ----------------------------
@@ -546,6 +567,7 @@ class DriftBottlePlugin(Star):
         try:
             sender_id = _get_sender_id(event)
         except ValueError:
+            event.stop_event()
             yield event.plain_result("无法识别你的身份，请稍后再试。")
             return
 
@@ -553,6 +575,7 @@ class DriftBottlePlugin(Star):
         my_floating = self._get_all_user_bottles(sender_id, status="floating")
 
         if not my_floating:
+            event.stop_event()
             yield event.plain_result("🫧 你目前没有漂流中的纸条～\n私聊机器人 /投瓶 可以投递纸条哦！")
             return
 
@@ -569,6 +592,7 @@ class DriftBottlePlugin(Star):
             lines.append(f"  投入时间：{bottle['created_at']}")
             lines.append("")
 
+        event.stop_event()
         yield event.plain_result("\n".join(lines).strip())
 
     # ----------------------------
@@ -586,18 +610,21 @@ class DriftBottlePlugin(Star):
                 break
 
         if not no_str:
+            event.stop_event()
             yield event.plain_result("请输入漂流瓶编号～\n用法：/收回 <编号>\n可用 /我的瓶子 查看编号")
             return
 
         try:
             no = int(no_str)
         except ValueError:
+            event.stop_event()
             yield event.plain_result("编号必须是数字哦～\n用法：/收回 <编号>")
             return
 
         try:
             sender_id = _get_sender_id(event)
         except ValueError:
+            event.stop_event()
             yield event.plain_result("无法识别你的身份，请稍后再试。")
             return
 
@@ -605,20 +632,24 @@ class DriftBottlePlugin(Star):
         bottle = self._get_bottle_by_public_no(no)
 
         if not bottle:
+            event.stop_event()
             yield event.plain_result(f"找不到第 {no} 号漂流瓶。\n请检查编号是否正确，或用 /我的瓶子 查看你的纸条。")
             return
 
         if bottle.get("sender_id") != sender_id:
+            event.stop_event()
             yield event.plain_result(f"第 {no} 号漂流瓶不是你投的哦，只能收回自己的纸条～")
             return
 
         if bottle.get("status") != "floating":
+            event.stop_event()
             yield event.plain_result(f"第 {no} 号漂流瓶已经不在漂流中了，无法收回。")
             return
 
         self._remove_bottle_from_all_pools(bottle["id"])
         await self._save_data()
 
+        event.stop_event()
         yield event.plain_result(
             f"🫧 已收回第 {no} 号纸条。\n"
             "这张纸条已从所有瓶海中移除，不会被任何人看到。"
@@ -639,12 +670,14 @@ class DriftBottlePlugin(Star):
                 break
 
         if not group_name:
+            event.stop_event()
             yield event.plain_result("请输入小组名称～\n用法：/设置小组 <组名>\n例如：/设置小组 第1组")
             return
 
         try:
             sender_id = _get_sender_id(event)
         except ValueError:
+            event.stop_event()
             yield event.plain_result("无法识别你的身份，请稍后再试。")
             return
 
@@ -653,11 +686,13 @@ class DriftBottlePlugin(Star):
         await self._save_member_to_group()
 
         if old_group:
+            event.stop_event()
             yield event.plain_result(
                 f"🫧 小组已更新：{old_group} → {group_name}\n"
                 "之后投递的纸条会同时进入大群瓶海和该小组的私有瓶海。"
             )
         else:
+            event.stop_event()
             yield event.plain_result(
                 f"🫧 已设置小组为【{group_name}】\n"
                 "之后投递的纸条会同时进入大群瓶海和该小组的私有瓶海。"

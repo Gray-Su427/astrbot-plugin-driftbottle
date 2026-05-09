@@ -1,7 +1,7 @@
 name: astrbot-plugin-driftbottle
 display_name: 漂流瓶
 desc: 匿名情绪漂流瓶——私聊投递小纸条，群内捞取/开箱读出，营造情绪接纳的信任空间。
-version: v2.1.0
+version: v2.1.1
 author: Gray-Su
 repo: ""
 support_platforms:
