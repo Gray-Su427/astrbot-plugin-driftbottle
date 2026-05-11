@@ -12,42 +12,11 @@ from astrbot.api.star import Context, Star, register
 
 PLUGIN_NAME = "astrbot-plugin-driftbottle"
 KV_STATE_KEY = "driftbottle_state"
-BOTTLES_FILE_NAME = "bottles.json"
-BLINDBOX_PLUGIN_NAME = "astrbot_plugin_blindbox"
 
 
 # ----------------------------
-# 工具函数（复用自盲盒插件）
+# 工具函数
 # ----------------------------
-
-
-def _resolve_data_root() -> Path:
-    """解析插件数据存储根目录。"""
-    current_dir = Path(__file__).resolve().parent
-    for ancestor in [current_dir, *current_dir.parents]:
-        data_dir = ancestor / "data"
-        if data_dir.is_dir():
-            return data_dir / "plugins" / PLUGIN_NAME
-    return current_dir / "data" / "plugins" / PLUGIN_NAME
-
-
-DATA_ROOT_DIR = _resolve_data_root()
-
-
-def _safe_json_dump(path: Path, data: object) -> None:
-    """安全地将数据写入 JSON 文件。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def _safe_json_load(path: Path, default: object) -> object:
-    """安全地从 JSON 文件读取数据。"""
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        return default
 
 
 def _timestamp(now: datetime | None = None) -> str:
@@ -86,27 +55,60 @@ class DriftBottlePlugin(Star):
     async def initialize(self):
         """插件初始化，加载漂流瓶数据和小组映射。"""
         logger.info("driftbottle plugin initialized")
+        self._register_web_apis(self.context)
         await self._load_data()
         await self._load_member_to_group()
 
+    def _register_web_apis(self, context: Context) -> None:
+        """注册 WebUI 管理接口。"""
+        context.register_web_api(f"/{PLUGIN_NAME}/state", self.api_state, ["GET"], "漂流瓶状态")
+        context.register_web_api(f"/{PLUGIN_NAME}/bottle/delete", self.api_bottle_delete, ["POST"], "删除漂流瓶")
+        context.register_web_api(f"/{PLUGIN_NAME}/bottle/recall-cancel", self.api_bottle_recall_cancel, ["POST"], "取消收回")
+
     # ----------------------------
-    # 数据读写
+    # 数据读写（KV 存储，与盲盒插件一致）
     # ----------------------------
 
-    def _bottles_file_path(self) -> Path:
-        return DATA_ROOT_DIR / BOTTLES_FILE_NAME
+    @staticmethod
+    def _legacy_bottles_file_path() -> Path:
+        """旧版 JSON 文件路径，仅用于数据迁移。"""
+        current_dir = Path(__file__).resolve().parent
+        for ancestor in [current_dir, *current_dir.parents]:
+            data_dir = ancestor / "data"
+            if data_dir.is_dir():
+                return data_dir / "plugins" / PLUGIN_NAME / "bottles.json"
+        return current_dir / "data" / "plugins" / PLUGIN_NAME / "bottles.json"
+
+    @staticmethod
+    def _try_load_legacy_file() -> dict[str, Any] | None:
+        """尝试从旧版 bottles.json 读取数据，用于迁移。"""
+        path = DriftBottlePlugin._legacy_bottles_file_path()
+        if not path.exists():
+            return None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and "public" in raw:
+                return raw
+            elif isinstance(raw, list):
+                return {"public": raw, "groups": {}}
+        except Exception:  # noqa: BLE001
+            pass
+        return None
 
     async def _load_data(self) -> dict[str, Any]:
-        """从 JSON 文件加载漂流瓶数据（双池结构）。"""
+        """从 KV 加载漂流瓶数据；若 KV 为空则尝试从旧文件迁移。"""
         async with self._lock:
-            raw = _safe_json_load(self._bottles_file_path(), None)
-            if isinstance(raw, dict) and "public" in raw:
-                self._data = raw
-            elif isinstance(raw, list):
-                self._data = {"public": raw, "groups": {}}
-                _safe_json_dump(self._bottles_file_path(), self._data)
+            stored = await self.get_kv_data(KV_STATE_KEY, None)
+            if isinstance(stored, dict) and "public" in stored:
+                self._data = stored
             else:
-                self._data = _default_data()
+                # 尝试从旧 JSON 文件迁移
+                legacy = self._try_load_legacy_file()
+                if legacy is not None:
+                    self._data = legacy
+                    logger.info("从旧版 bottles.json 迁移了漂流瓶数据到 KV 存储")
+                else:
+                    self._data = _default_data()
 
             # 初始化 next_no 并为旧瓶子补 no 字段
             if "next_no" not in self._data or not isinstance(self._data.get("next_no"), int):
@@ -122,14 +124,15 @@ class DriftBottlePlugin(Star):
                         bottle.setdefault("likes", 0)
                         bottle.setdefault("liked_by", [])
                         bottle.setdefault("recalled", False)
+
             self._data_loaded = True
-            _safe_json_dump(self._bottles_file_path(), self._data)
+            await self.put_kv_data(KV_STATE_KEY, self._data)
             return self._data
 
     async def _save_data(self) -> None:
-        """将漂流瓶数据写入 JSON 文件。"""
+        """将漂流瓶数据写入 KV 存储。"""
         async with self._lock:
-            _safe_json_dump(self._bottles_file_path(), self._data)
+            await self.put_kv_data(KV_STATE_KEY, self._data)
 
     async def _get_data(self) -> dict[str, Any]:
         """获取数据（懒加载）。"""
@@ -142,33 +145,29 @@ class DriftBottlePlugin(Star):
     # ----------------------------
 
     async def _load_member_to_group(self) -> None:
-        """加载用户→小组映射：优先从盲盒插件读取，备用从 KV 缓存读取。"""
-        blindbox_meta = self.context.get_registered_star(BLINDBOX_PLUGIN_NAME)
-        if blindbox_meta:
-            try:
-                blindbox_state = await self.get_kv_data("blindbox_state", None)
-                if isinstance(blindbox_state, dict):
-                    member_to_group = blindbox_state.get("member_to_group", {})
-                    if isinstance(member_to_group, dict):
-                        self._member_to_group.update(member_to_group)
-                        logger.info(f"从盲盒插件加载了 {len(member_to_group)} 条小组映射")
-            except Exception as e:
-                logger.warning(f"从盲盒插件读取小组映射失败: {e}")
+        """加载用户→小组映射：从盲盒插件 KV 和本地 KV 读取。"""
+        # 尝试从盲盒插件的 KV 中读取小组映射
+        try:
+            blindbox_state = await self.get_kv_data("blindbox_state", None)
+            if isinstance(blindbox_state, dict):
+                member_to_group = blindbox_state.get("member_to_group", {})
+                if isinstance(member_to_group, dict):
+                    self._member_to_group.update(member_to_group)
+                    logger.info(f"从盲盒插件加载了 {len(member_to_group)} 条小组映射")
+        except Exception as e:
+            logger.warning(f"从盲盒插件读取小组映射失败: {e}")
 
-        cached = await self.get_kv_data(KV_STATE_KEY, None)
-        if isinstance(cached, dict):
-            manual_mapping = cached.get("member_to_group", {})
-            if isinstance(manual_mapping, dict):
-                self._member_to_group.update(manual_mapping)
-                logger.info(f"从本地缓存加载了 {len(manual_mapping)} 条小组映射")
+        # 从漂流瓶自己的 KV 中读取手动设置的映射
+        state = await self._get_data()
+        manual_mapping = state.get("member_to_group", {})
+        if isinstance(manual_mapping, dict):
+            self._member_to_group.update(manual_mapping)
+            logger.info(f"从本地 KV 加载了 {len(manual_mapping)} 条小组映射")
 
     async def _save_member_to_group(self) -> None:
-        """保存手动设置的小组映射到 KV。"""
-        cached = await self.get_kv_data(KV_STATE_KEY, None)
-        if not isinstance(cached, dict):
-            cached = {}
-        cached["member_to_group"] = self._member_to_group
-        await self.put_kv_data(KV_STATE_KEY, cached)
+        """保存手动设置的小组映射到 KV（合并到主数据中）。"""
+        self._data["member_to_group"] = self._member_to_group
+        await self._save_data()
 
     def _get_user_group(self, sender_id: str) -> str | None:
         """根据发送者 ID 获取所属小组名。"""
