@@ -66,7 +66,7 @@ def _get_sender_id(event: AstrMessageEvent) -> str:
 
 def _default_data() -> dict[str, Any]:
     """返回默认的数据结构。"""
-    return {"public": [], "groups": {}}
+    return {"public": [], "groups": {}, "next_no": 1}
 
 
 # ----------------------------
@@ -74,7 +74,7 @@ def _default_data() -> dict[str, Any]:
 # ----------------------------
 
 
-@register(PLUGIN_NAME, "Gray-Su", "匿名情绪漂流瓶——私聊投递，群内捞取", "2.1.0")
+@register(PLUGIN_NAME, "Gray-Su", "匿名情绪漂流瓶——私聊投递，群内捞取", "2.2.0")
 class DriftBottlePlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -107,11 +107,21 @@ class DriftBottlePlugin(Star):
                 _safe_json_dump(self._bottles_file_path(), self._data)
             else:
                 self._data = _default_data()
+
+            # 初始化 next_no 并为旧瓶子补 no 字段
+            if "next_no" not in self._data or not isinstance(self._data.get("next_no"), int):
+                public = self._data.get("public", [])
+                self._data["next_no"] = len(public) + 1
+                for i, bottle in enumerate(public):
+                    if isinstance(bottle, dict) and "no" not in bottle:
+                        bottle["no"] = i + 1
+
             for pool in [self._data.get("public", [])] + list(self._data.get("groups", {}).values()):
                 for bottle in pool:
                     if isinstance(bottle, dict):
                         bottle.setdefault("likes", 0)
                         bottle.setdefault("liked_by", [])
+                        bottle.setdefault("recalled", False)
             self._data_loaded = True
             _safe_json_dump(self._bottles_file_path(), self._data)
             return self._data
@@ -185,7 +195,9 @@ class DriftBottlePlugin(Star):
         return [
             b
             for b in pool
-            if b.get("status") == "floating" and b.get("sender_id") != exclude_sender_id
+            if b.get("status") == "floating"
+            and not b.get("recalled", False)
+            and b.get("sender_id") != exclude_sender_id
         ]
 
     def _add_bottle_to_pools(self, bottle: dict[str, Any], pools: list[str]) -> None:
@@ -195,8 +207,20 @@ class DriftBottlePlugin(Star):
             pool.append(bottle)
         bottle["pools"] = pools
 
+    def _mark_bottle_recalled(self, bottle_id: str) -> bool:
+        """将指定瓶子标记为已收回（不删除，保持编号稳定）。"""
+        all_pools = [self._data.get("public", [])]
+        all_pools.extend(self._data.get("groups", {}).values())
+        for pool in all_pools:
+            for bottle in pool:
+                if bottle.get("id") == bottle_id:
+                    bottle["recalled"] = True
+                    bottle["status"] = "recalled"
+                    return True
+        return False
+
     def _remove_bottle_from_all_pools(self, bottle_id: str) -> bool:
-        """从所有池子中移除指定瓶子（用于收回）。"""
+        """从所有池子中真正删除指定瓶子（管理员操作）。"""
         removed = False
         public = self._data.get("public", [])
         new_public = [b for b in public if b.get("id") != bottle_id]
@@ -210,6 +234,18 @@ class DriftBottlePlugin(Star):
                 removed = True
             groups[group_name] = new_pool
         return removed
+
+    def _cancel_recall(self, bottle_id: str) -> bool:
+        """取消收回状态，恢复为漂流中。"""
+        all_pools = [self._data.get("public", [])]
+        all_pools.extend(self._data.get("groups", {}).values())
+        for pool in all_pools:
+            for bottle in pool:
+                if bottle.get("id") == bottle_id:
+                    bottle["recalled"] = False
+                    bottle["status"] = "floating"
+                    return True
+        return False
 
     def _find_bottle_in_all_pools(
         self, bottle_id: str, sender_id: str = "", status: str = "floating"
@@ -240,32 +276,26 @@ class DriftBottlePlugin(Star):
                 if (
                     bottle.get("sender_id") == sender_id
                     and bottle.get("status") == status
+                    and not bottle.get("recalled", False)
                     and bottle.get("id") not in seen_ids
                 ):
                     seen_ids.add(bottle["id"])
                     result.append(bottle)
         return result
 
-    def _get_bottle_public_no(self, bottle: dict[str, Any]) -> int:
-        """获取瓶子在大群池中的序列号（从1开始），找不到返回-1。"""
+    def _get_bottle_by_no(self, no: int) -> dict[str, Any] | None:
+        """根据自增编号获取瓶子（在大群池中查找）。"""
         public = self._data.get("public", [])
-        for i, b in enumerate(public):
-            if b.get("id") == bottle.get("id"):
-                return i + 1
-        return -1
-
-    def _get_bottle_by_public_no(self, no: int) -> dict[str, Any] | None:
-        """根据大群序列号获取瓶子。"""
-        public = self._data.get("public", [])
-        if 1 <= no <= len(public):
-            return public[no - 1]
+        for bottle in public:
+            if bottle.get("no") == no:
+                return bottle
         return None
 
     def _format_bottle_display(
         self, bottle: dict[str, Any], show_name: bool = False
     ) -> str:
         """格式化瓶子的展示文本，包含编号和点赞数。"""
-        no = self._get_bottle_public_no(bottle)
+        no = bottle.get("no", 0)
         likes = bottle.get("likes", 0)
         no_str = f"【第 {no} 号漂流瓶】\n" if no > 0 else ""
         like_str = f"  ❤️ {likes}" if likes > 0 else ""
@@ -315,8 +345,12 @@ class DriftBottlePlugin(Star):
         if group_name:
             pools.append(group_name)
 
+        no = self._data["next_no"]
+        self._data["next_no"] = no + 1
+
         bottle = {
             "id": uuid4().hex[:8],
+            "no": no,
             "sender_id": sender_id,
             "sender_name": sender_name,
             "content": content,
@@ -326,12 +360,12 @@ class DriftBottlePlugin(Star):
             "pools": pools,
             "likes": 0,
             "liked_by": [],
+            "recalled": False,
         }
 
         self._add_bottle_to_pools(bottle, pools)
         await self._save_data()
 
-        no = self._get_bottle_public_no(bottle)
         group_hint = f"\n已同时投入【{group_name}】的私有瓶海。" if group_name else ""
         event.stop_event()
         yield event.plain_result(
@@ -493,11 +527,16 @@ class DriftBottlePlugin(Star):
             return
 
         await self._get_data()
-        bottle = self._get_bottle_by_public_no(no)
+        bottle = self._get_bottle_by_no(no)
 
         if not bottle:
             event.stop_event()
             yield event.plain_result(f"找不到第 {no} 号漂流瓶，请检查编号是否正确～")
+            return
+
+        if bottle.get("recalled", False):
+            event.stop_event()
+            yield event.plain_result(f"第 {no} 号漂流瓶已被收回，无法点赞～")
             return
 
         liked_by: list[str] = bottle.get("liked_by", [])
@@ -527,12 +566,12 @@ class DriftBottlePlugin(Star):
         await self._get_data()
 
         public = self._data.get("public", [])
-        pub_floating = sum(1 for b in public if b.get("status") == "floating")
-        pub_read = sum(1 for b in public if b.get("status") == "read")
+        pub_floating = sum(1 for b in public if b.get("status") == "floating" and not b.get("recalled", False))
+        pub_read = sum(1 for b in public if b.get("status") == "read" and not b.get("recalled", False))
 
         lines = [
             "🫧 瓶海统计：\n",
-            f"  【大群瓶海】漂流中 {pub_floating} 张 | 已读出 {pub_read} 张",
+            f"  【大群瓶海】漂流中 {pub_floating} 张",
         ]
 
         try:
@@ -543,9 +582,9 @@ class DriftBottlePlugin(Star):
 
         if group_name:
             group_pool = self._get_pool(group_name)
-            grp_floating = sum(1 for b in group_pool if b.get("status") == "floating")
-            grp_read = sum(1 for b in group_pool if b.get("status") == "read")
-            lines.append(f"  【{group_name}瓶海】漂流中 {grp_floating} 张 | 已读出 {grp_read} 张")
+            grp_floating = sum(1 for b in group_pool if b.get("status") == "floating" and not b.get("recalled", False))
+            grp_read = sum(1 for b in group_pool if b.get("status") == "read" and not b.get("recalled", False))
+            lines.append(f"  【{group_name}瓶海】漂流中 {grp_floating} 张")
         else:
             lines.append("  【小组瓶海】未设置小组，无法显示")
 
@@ -579,7 +618,7 @@ class DriftBottlePlugin(Star):
 
         lines = [f"🫧 你有 {len(my_floating)} 张纸条在漂流中：\n"]
         for bottle in my_floating:
-            no = self._get_bottle_public_no(bottle)
+            no = bottle.get("no", 0)
             preview = bottle["content"][:30] + "..." if len(bottle["content"]) > 30 else bottle["content"]
             likes = bottle.get("likes", 0)
             pools = bottle.get("pools", [])
@@ -600,7 +639,7 @@ class DriftBottlePlugin(Star):
     @filter.command("收回")
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     async def recall_bottle(self, event: AstrMessageEvent):
-        """收回自己仍在漂流中的纸条（从所有池子移除）。用法：/收回 <编号>"""
+        """收回自己仍在漂流中的纸条（标记为已收回，不删除）。用法：/收回 <编号>"""
         no_str = event.message_str.strip()
         parts = no_str.split()
         no_str = parts[-1] if len(parts) >= 2 else ""
@@ -625,7 +664,7 @@ class DriftBottlePlugin(Star):
             return
 
         await self._get_data()
-        bottle = self._get_bottle_by_public_no(no)
+        bottle = self._get_bottle_by_no(no)
 
         if not bottle:
             event.stop_event()
@@ -637,18 +676,18 @@ class DriftBottlePlugin(Star):
             yield event.plain_result(f"第 {no} 号漂流瓶不是你投的哦，只能收回自己的纸条～")
             return
 
-        if bottle.get("status") != "floating":
+        if bottle.get("status") != "floating" or bottle.get("recalled", False):
             event.stop_event()
             yield event.plain_result(f"第 {no} 号漂流瓶已经不在漂流中了，无法收回。")
             return
 
-        self._remove_bottle_from_all_pools(bottle["id"])
+        self._mark_bottle_recalled(bottle["id"])
         await self._save_data()
 
         event.stop_event()
         yield event.plain_result(
             f"🫧 已收回第 {no} 号纸条。\n"
-            "这张纸条已从所有瓶海中移除，不会被任何人看到。"
+            "这张纸条已标记为已收回，不会再被任何人捞到。"
         )
 
     # ----------------------------
@@ -693,6 +732,75 @@ class DriftBottlePlugin(Star):
                 f"🫧 已设置小组为【{group_name}】\n"
                 "之后投递的纸条会同时进入大群瓶海和该小组的私有瓶海。"
             )
+
+    # ----------------------------
+    # WebUI API
+    # ----------------------------
+
+    async def _api_result(self, handler):
+        """统一的 API 返回格式封装。"""
+        try:
+            data = await handler()
+            return {"success": True, "message": "", "data": data}
+        except Exception as e:
+            return {"success": False, "message": str(e), "data": None}
+
+    async def api_state(self):
+        """返回所有池子的瓶子数据和统计信息。"""
+        async def _handler():
+            await self._get_data()
+            public = self._data.get("public", [])
+            groups = self._data.get("groups", {})
+
+            def pool_stats(pool):
+                total = len(pool)
+                floating = sum(1 for b in pool if b.get("status") == "floating" and not b.get("recalled", False))
+                recalled = sum(1 for b in pool if b.get("recalled", False))
+                return {"total": total, "floating": floating, "recalled": recalled}
+
+            return {
+                "public": public,
+                "groups": groups,
+                "stats": {
+                    "public": pool_stats(public),
+                    "groups": {name: pool_stats(pool) for name, pool in groups.items()},
+                },
+                "next_no": self._data.get("next_no", 1),
+            }
+        return await self._api_result(_handler)
+
+    async def api_bottle_delete(self):
+        """管理员删除指定瓶子（从所有池子真正移除）。"""
+        async def _handler():
+            from astrbot.core.star.star_handler import star_handlers_registry
+            # 获取请求体
+            from astrbot.dashboard.routes.route import Route
+            from quart import request as quart_request
+            data = await quart_request.get_json(silent=True) or {}
+            bottle_id = data.get("bottle_id", "")
+            if not bottle_id:
+                raise ValueError("缺少 bottle_id 参数")
+            removed = self._remove_bottle_from_all_pools(bottle_id)
+            if not removed:
+                raise ValueError("未找到指定瓶子")
+            await self._save_data()
+            return {"removed": True}
+        return await self._api_result(_handler)
+
+    async def api_bottle_recall_cancel(self):
+        """管理员取消收回状态。"""
+        async def _handler():
+            from quart import request as quart_request
+            data = await quart_request.get_json(silent=True) or {}
+            bottle_id = data.get("bottle_id", "")
+            if not bottle_id:
+                raise ValueError("缺少 bottle_id 参数")
+            cancelled = self._cancel_recall(bottle_id)
+            if not cancelled:
+                raise ValueError("未找到指定瓶子")
+            await self._save_data()
+            return {"cancelled": True}
+        return await self._api_result(_handler)
 
     async def terminate(self):
         """插件销毁时的清理工作。"""
