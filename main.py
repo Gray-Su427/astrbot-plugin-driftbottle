@@ -2,7 +2,7 @@ import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
-from random import choice
+from secrets import choice
 from typing import Any
 from uuid import uuid4
 
@@ -35,7 +35,7 @@ def _get_sender_id(event: AstrMessageEvent) -> str:
 
 def _default_data() -> dict[str, Any]:
     """返回默认的数据结构。"""
-    return {"public": [], "groups": {}, "next_no": 1}
+    return {"public": [], "groups": {}, "next_no": 1, "user_recent_picks": {}}
 
 
 # ----------------------------
@@ -43,7 +43,7 @@ def _default_data() -> dict[str, Any]:
 # ----------------------------
 
 
-@register(PLUGIN_NAME, "Gray-Su", "匿名情绪漂流瓶——私聊投递，群内捞取", "2.2.0")
+@register(PLUGIN_NAME, "Gray-Su", "匿名情绪漂流瓶——私聊投递，群内捞取", "2.2.1")
 class DriftBottlePlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -290,6 +290,38 @@ class DriftBottlePlugin(Star):
                 return bottle
         return None
 
+    # ----------------------------
+    # 防重复捞瓶
+    # ----------------------------
+
+    _MAX_RECENT_PICKS = 20
+
+    def _record_pick(self, sender_id: str, bottle_id: str) -> None:
+        """记录用户最近捞到的瓶子 ID，用于防重复。"""
+        recent: dict[str, list[str]] = self._data.setdefault("user_recent_picks", {})
+        picks: list[str] = recent.setdefault(sender_id, [])
+        if bottle_id in picks:
+            picks.remove(bottle_id)
+        picks.append(bottle_id)
+        # 只保留最近 _MAX_RECENT_PICKS 条
+        if len(picks) > self._MAX_RECENT_PICKS:
+            recent[sender_id] = picks[-self._MAX_RECENT_PICKS:]
+
+    def _pick_bottle_with_dedup(
+        self, floating: list[dict[str, Any]], sender_id: str
+    ) -> dict[str, Any]:
+        """从漂流瓶列表中随机选择一个，优先排除用户最近捞过的。"""
+        recent: dict[str, list[str]] = self._data.get("user_recent_picks", {})
+        picked_ids: set[str] = set(recent.get(sender_id, []))
+
+        # 优先从没被最近捞过的瓶子中选
+        fresh = [b for b in floating if b["id"] not in picked_ids]
+        if fresh:
+            return choice(fresh)
+
+        # 全部都被捞过了，退回全量随机
+        return choice(floating)
+
     def _format_bottle_display(
         self, bottle: dict[str, Any], show_name: bool = False
     ) -> str:
@@ -396,7 +428,10 @@ class DriftBottlePlugin(Star):
             yield event.plain_result("🫧 瓶海空空如也，暂时没有可以捞的纸条～\n去私聊机器人 /投瓶 投一张吧！")
             return
 
-        bottle = choice(floating)
+        bottle = self._pick_bottle_with_dedup(floating, sender_id)
+        self._record_pick(sender_id, bottle["id"])
+        await self._save_data()
+
         display = self._format_bottle_display(bottle, show_name=False)
 
         event.stop_event()
@@ -437,7 +472,10 @@ class DriftBottlePlugin(Star):
             )
             return
 
-        bottle = choice(floating)
+        bottle = self._pick_bottle_with_dedup(floating, sender_id)
+        self._record_pick(sender_id, bottle["id"])
+        await self._save_data()
+
         display = self._format_bottle_display(bottle, show_name=True)
 
         event.stop_event()

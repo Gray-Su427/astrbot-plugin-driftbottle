@@ -1,7 +1,7 @@
 name: astrbot-plugin-driftbottle
 display_name: 匿名情绪漂流瓶
 author: Gray-Su
-version: 2.2.0
+version: 2.2.1
 desc: 匿名情绪漂流瓶——私聊投递，群内捞取，支持 WebUI 管理
 short_desc: 匿名情绪漂流瓶
 support_platforms:
